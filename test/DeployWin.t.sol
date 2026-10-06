@@ -15,14 +15,17 @@ import {WinGameHook} from "../src/WinGameHook.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 contract DeployWinTest is Test {
-    uint160 constant SQRT_PRICE_1_1 = 79228162514264337593543950336;
-
     function test_deployProducesTokenAndHookBoundToThePoolManager() public {
         PoolManager manager = new PoolManager(address(this));
         DeployWin script = new DeployWin();
 
         (WinToken token, WinGameHook hook, bytes32 salt) = script.deploy(
-            DeployWin.Config({poolManager: IPoolManager(address(manager)), create2Deployer: address(script)})
+            DeployWin.Config({
+                poolManager: IPoolManager(address(manager)),
+                create2Deployer: address(script),
+                pairedCurrency: address(0),
+                initializePool: false
+            })
         );
 
         assertEq(token.totalSupply(), 1_000_000_000 ether);
@@ -41,14 +44,39 @@ contract DeployWinTest is Test {
             )
         );
 
-        // The deployed pair is usable: its pool initializes against any other currency.
+        // The deployed pair is usable: its pool initializes against an 18-decimal currency at the
+        // briefed starting price for whichever ordering the addresses give.
         MockERC20 imd = new MockERC20("IdentityMD", "IMD", 0);
         (address c0, address c1) =
             address(token) < address(imd) ? (address(token), address(imd)) : (address(imd), address(token));
         PoolKey memory key = PoolKey(Currency.wrap(c0), Currency.wrap(c1), 3_000, 60, IHooks(address(hook)));
-        manager.initialize(key, SQRT_PRICE_1_1);
+        manager.initialize(key, hook.launchSqrtPriceX96(address(token) < address(imd)));
         assertTrue(hook.poolInitialized());
         assertEq(Currency.unwrap(hook.imd()), address(imd));
+    }
+
+    /// @dev The rehearsal path: token, hook and pool initialization in one `deploy` call, so no
+    /// stranger can bind the hook to another pool between deployment and initialization.
+    function test_deployCanInitializeThePoolInTheSameCall() public {
+        PoolManager manager = new PoolManager(address(this));
+        MockERC20 imd = new MockERC20("IdentityMD", "IMD", 0);
+        DeployWin script = new DeployWin();
+
+        (WinToken token, WinGameHook hook,) = script.deploy(
+            DeployWin.Config({
+                poolManager: IPoolManager(address(manager)),
+                create2Deployer: address(script),
+                pairedCurrency: address(imd),
+                initializePool: true
+            })
+        );
+
+        assertTrue(hook.poolInitialized());
+        assertEq(Currency.unwrap(hook.imd()), address(imd));
+        assertEq(hook.winIsCurrency0(), address(token) < address(imd));
+        assertEq(hook.poolKey().fee, script.POOL_FEE());
+        assertEq(hook.poolKey().tickSpacing, script.TICK_SPACING());
+        assertEq(hook.launchTime(), block.timestamp);
     }
 
     function test_mineSaltIsDeterministicAndFindsTheFlags() public pure {

@@ -1,12 +1,36 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
+import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
+import {Hooks} from "v4-core/src/libraries/Hooks.sol";
+import {CustomRevert} from "v4-core/src/libraries/CustomRevert.sol";
+import {TickMath} from "v4-core/src/libraries/TickMath.sol";
+import {BalanceDelta} from "v4-core/src/types/BalanceDelta.sol";
+import {SwapParams} from "v4-core/src/types/PoolOperation.sol";
+import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
+
 import {WinGameFixture} from "./utils/WinGameFixture.sol";
 import {WinGameHook} from "../src/WinGameHook.sol";
+import {MsgSenderRouter} from "./mocks/MsgSenderRouter.sol";
 
 /// @notice Rounds, minimum buy, settlement, sniping defences, buyer identity and the website views.
 contract WinGameHookGameTest is WinGameFixture {
     uint256 constant FLOOR = 8.5 ether;
+
+    /// @dev What the PoolManager reports when `afterSwap` reverts with `inner`.
+    function _afterSwapRevert(bytes memory inner) internal view returns (bytes memory) {
+        return abi.encodeWithSelector(
+            CustomRevert.WrappedError.selector,
+            address(hook),
+            IHooks.afterSwap.selector,
+            inner,
+            abi.encodeWithSelector(Hooks.HookCallFailed.selector)
+        );
+    }
+
+    function _mustLead(address buyer) internal pure returns (bytes memory) {
+        return abi.encode(buyer, true);
+    }
 
     // ------------------------------------------------------------------ helpers
 
@@ -496,6 +520,344 @@ contract WinGameHookGameTest is WinGameFixture {
         assertTrue(hook.leader() != address(manager));
     }
 
+    function test_identity_sixtyFourBytePayloadNamesTheBuyerWithoutTheFlag() public {
+        warpPastDecay();
+        buyExactIn(alice, FLOOR, abi.encode(bob, false));
+        assertEq(hook.leader(), bob);
+    }
+
+    function test_identity_malformedSixtyFourBytePayloadReverts() public {
+        warpPastDecay();
+        bytes[3] memory bad = [
+            abi.encode(bob, uint256(2)), // flag that is not a bool
+            abi.encode(address(0), true), // nobody named
+            abi.encode(uint256(1) << 200 | uint256(uint160(bob)), true) // dirty upper bits
+        ];
+        for (uint256 i = 0; i < bad.length; i++) {
+            vm.expectRevert(_afterSwapRevert(abi.encodeWithSelector(WinGameHook.MalformedHookData.selector)));
+            buyExactIn(alice, FLOOR, bad[i]);
+        }
+        assertFalse(hook.roundActive());
+    }
+
+    // ------------------------------------------------------------------ identity through the router
+
+    function _msgSenderRouter() internal returns (MsgSenderRouter r, address account, address bundler) {
+        r = new MsgSenderRouter(manager);
+        account = makeAddr("smartAccount");
+        bundler = makeAddr("bundler");
+        imd.mint(account, 1_000 ether);
+        vm.prank(account);
+        imd.approve(address(r), type(uint256).max);
+    }
+
+    function _buyParams(uint256 imdAmount) internal view returns (SwapParams memory) {
+        bool zeroForOne = !winIsCurrency0;
+        return SwapParams(zeroForOne, -int256(imdAmount), _limit(zeroForOne));
+    }
+
+    /// @dev A 4337-style trade: the paying account calls the router, the bundler signed the
+    /// transaction. Without hookData the hook asks the router who called it.
+    function test_identity_routerMsgSenderIsUsedBeforeTxOrigin() public {
+        warpPastDecay();
+        (MsgSenderRouter r, address account, address bundler) = _msgSenderRouter();
+        vm.prank(account, bundler);
+        r.swap(key, _buyParams(FLOOR), "");
+        assertEq(hook.leader(), account, "the paying account leads, not the bundler");
+        assertTrue(hook.leader() != bundler);
+    }
+
+    function test_identity_hookDataBeatsRouterMsgSender() public {
+        warpPastDecay();
+        (MsgSenderRouter r, address account, address bundler) = _msgSenderRouter();
+        vm.prank(account, bundler);
+        r.swap(key, _buyParams(FLOOR), abi.encode(carol));
+        assertEq(hook.leader(), carol);
+    }
+
+    function test_identity_routerThatRevertsOrReturnsGarbageFallsBackToTxOrigin() public {
+        warpPastDecay();
+        (MsgSenderRouter r, address account, address bundler) = _msgSenderRouter();
+
+        r.setMode(MsgSenderRouter.Mode.Reverts, address(0));
+        vm.prank(account, bundler);
+        r.swap(key, _buyParams(FLOOR), "");
+        assertEq(hook.leader(), bundler, "reverting msgSender: signer is credited");
+
+        r.setMode(MsgSenderRouter.Mode.Garbage, address(0));
+        SwapParams memory next = _buyParams(hook.minimumBuy());
+        vm.prank(account, alice);
+        r.swap(key, next, "");
+        assertEq(hook.leader(), alice, "garbage msgSender: signer is credited");
+    }
+
+    function test_identity_lyingRouterCanOnlyGiftTheLead() public {
+        warpPastDecay();
+        (MsgSenderRouter r, address account, address bundler) = _msgSenderRouter();
+        r.setMode(MsgSenderRouter.Mode.Lies, carol);
+        vm.prank(account, bundler);
+        r.swap(key, _buyParams(FLOOR), "");
+        assertEq(hook.leader(), carol);
+        // Nothing else moved: the fee was charged and the bank grew exactly as for an honest trade.
+        assertEq(hook.bank(), FLOOR * 30_000 / 1_000_000 * 9 / 10);
+    }
+
+    /// @dev The documented residual: a router without `msgSender()` and a swap without hookData
+    /// credit the transaction signer. Smart accounts must use the website (hookData) or a router
+    /// that reports its caller.
+    function test_identity_routerWithoutMsgSenderCreditsTheSigner() public {
+        warpPastDecay();
+        address account = makeAddr("smartAccount");
+        address bundler = makeAddr("bundler");
+        _fund(account);
+        vm.prank(account, bundler);
+        swapRouter.swap(key, _buyParams(FLOOR), PoolSwapTest.TestSettings(false, false), "");
+        assertEq(hook.leader(), bundler);
+    }
+
+    // ------------------------------------------------------------------ must-lead flag
+
+    function test_mustLead_qualifyingBuyLeads() public {
+        warpPastDecay();
+        buyExactIn(alice, FLOOR, _mustLead(alice));
+        assertEq(hook.leader(), alice);
+        assertEq(hook.qualifyingBuysInRound(), 1);
+    }
+
+    function test_mustLead_buyBelowTheMinimumRevertsAndCostsNoFee() public {
+        warpPastDecay();
+        uint256 minimum = hook.minimumBuy();
+        uint256 imdBefore = imd.balanceOf(alice);
+        vm.expectRevert(
+            _afterSwapRevert(abi.encodeWithSelector(WinGameHook.NotQualifying.selector, minimum, minimum - 1))
+        );
+        buyExactIn(alice, minimum - 1, _mustLead(alice));
+        assertEq(imd.balanceOf(alice), imdBefore, "nothing spent");
+        assertEq(hook.bank(), 0, "no fee taken");
+        assertFalse(hook.roundActive());
+    }
+
+    /// @dev The reviewer's case A: in the prize-linked regime any fee (here a dust buy) raises the
+    /// minimum, so a challenger who pays exactly the displayed minimum lands short by a few wei.
+    function test_mustLead_dustBuyThatRaisesTheMinimumVoidsTheChallengeWithoutAFee() public {
+        _finishRoundOne();
+        buyExactIn(carol, 50_000 ether); // carol leads round 2 with a large bank
+        buyExactIn(alice, hook.minimumBuy());
+        assertEq(hook.leader(), alice);
+        uint256 shown = hook.minimumBuy();
+        assertGt(shown, FLOOR, "prize-linked regime");
+        uint64 deadline = hook.deadline();
+
+        buyExactIn(alice, 1_000_000); // 1e-12 IMD of dust
+        uint256 moved = hook.minimumBuy();
+        assertGt(moved, shown, "the dust fee moved the minimum");
+
+        // Flagged: the whole swap reverts, bob keeps his IMD and alice keeps her deadline.
+        uint256 bobBefore = imd.balanceOf(bob);
+        vm.expectRevert(_afterSwapRevert(abi.encodeWithSelector(WinGameHook.NotQualifying.selector, moved, shown)));
+        buyExactIn(bob, shown, _mustLead(bob));
+        assertEq(imd.balanceOf(bob), bobBefore);
+        assertEq(hook.leader(), alice);
+        assertEq(hook.deadline(), deadline);
+
+        // Unflagged: the same buy executes as an ordinary (fee-paying) buy, as the rules say.
+        buyExactIn(bob, shown, abi.encode(bob));
+        assertLt(imd.balanceOf(bob), bobBefore);
+        assertEq(hook.leader(), alice);
+
+        // Flagged at the live minimum: takes the lead.
+        buyExactIn(bob, hook.minimumBuy(), _mustLead(bob));
+        assertEq(hook.leader(), bob);
+        assertEq(hook.deadline(), block.timestamp + 10 minutes);
+    }
+
+    /// @dev The reviewer's case B: in the floor regime the leader re-qualifies (and sells back)
+    /// ahead of a challenger who priced in one 5% step but not two.
+    function test_mustLead_leaderRequalifyingAheadVoidsTheChallengeWithoutAFee() public {
+        _finishRoundOne();
+        buyExactIn(alice, hook.minimumBuy());
+        uint256 shown = hook.minimumBuy(); // 8.925
+        uint256 bobBid = shown * 104 / 100; // bob allows 4% slippage on the minimum
+        BalanceDelta d = buyExactIn(alice, shown); // alice re-qualifies first
+        sellExactIn(alice, uint256(winDeltaOf(d)));
+        assertGt(hook.minimumBuy(), bobBid);
+
+        uint256 bobBefore = imd.balanceOf(bob);
+        vm.expectRevert(
+            _afterSwapRevert(abi.encodeWithSelector(WinGameHook.NotQualifying.selector, hook.minimumBuy(), bobBid))
+        );
+        buyExactIn(bob, bobBid, _mustLead(bob));
+        assertEq(imd.balanceOf(bob), bobBefore);
+        assertEq(hook.leader(), alice);
+    }
+
+    /// @dev The reviewer's case C: an exact-output buy's gross IMD depends on the pool price, so
+    /// a sell placed in front lowers it below the minimum.
+    function test_mustLead_exactOutputBuyUndercutByASellRevertsWithoutAFee() public {
+        warpPastDecay();
+        buyExactIn(alice, 500 ether);
+        assertEq(hook.leader(), alice);
+        uint256 minimum = hook.minimumBuy();
+
+        // How much WIN the minimum plus a 1% margin buys right now.
+        uint256 snapshot = vm.snapshotState();
+        BalanceDelta probe = buyExactIn(carol, minimum * 101 / 100);
+        uint256 winOut = uint256(winDeltaOf(probe));
+        vm.revertToState(snapshot);
+
+        // Control: without interference the exact-output buy leads.
+        snapshot = vm.snapshotState();
+        buyExactOut(carol, winOut, _mustLead(carol));
+        assertEq(hook.leader(), carol);
+        vm.revertToState(snapshot);
+
+        // Alice sells 5% of her WIN first; carol's identical buy is now cheaper than the minimum.
+        sellExactIn(alice, win.balanceOf(alice) / 20);
+        uint256 carolBefore = imd.balanceOf(carol);
+        bool zeroForOne = !winIsCurrency0;
+        vm.prank(carol, carol);
+        (bool ok, bytes memory err) = address(swapRouter)
+            .call(
+                abi.encodeCall(
+                    PoolSwapTest.swap,
+                    (
+                        key,
+                        SwapParams(zeroForOne, int256(winOut), _limit(zeroForOne)),
+                        PoolSwapTest.TestSettings(false, false),
+                        _mustLead(carol)
+                    )
+                )
+            );
+        assertFalse(ok, "flagged buy must revert");
+        assertTrue(_contains(err, WinGameHook.NotQualifying.selector), "with NotQualifying");
+        assertEq(imd.balanceOf(carol), carolBefore, "no fee paid");
+        assertEq(hook.leader(), alice);
+
+        // Unflagged, the same buy goes through as an ordinary buy and alice stays leader.
+        buyExactOut(carol, winOut, abi.encode(carol));
+        assertEq(hook.leader(), alice);
+        assertLt(imd.balanceOf(carol), carolBefore);
+    }
+
+    function test_mustLead_flagOnASellReverts() public {
+        warpPastDecay();
+        giveWin(bob, 50_000_000 ether);
+        buyExactIn(alice, 100 ether);
+        bool zeroForOne = winIsCurrency0;
+        vm.expectRevert(_afterSwapRevert(abi.encodeWithSelector(WinGameHook.MustLeadOnlyOnBuys.selector)));
+        _swap(bob, SwapParams(zeroForOne, -int256(1_000 ether), _limit(zeroForOne)), _mustLead(bob));
+    }
+
+    function test_mustLead_buyAfterExpiryIsJudgedAgainstTheNextRound() public {
+        _finishRoundOne();
+        for (uint256 i = 0; i < 4; i++) {
+            buyExactIn(alice, hook.minimumBuy());
+        }
+        vm.warp(hook.deadline());
+        uint256 shown = hook.minimumBuy(); // the next round's minimum, escalator reset
+        assertEq(shown, FLOOR);
+        buyExactIn(bob, shown, _mustLead(bob));
+        assertEq(hook.winnerAt(1).winner, alice, "round 2 closed for alice");
+        assertEq(hook.leader(), bob, "bob opened round 3");
+        assertEq(hook.roundsStarted(), 3);
+    }
+
+    function _contains(bytes memory data, bytes4 selector) internal pure returns (bool) {
+        if (data.length < 4) return false;
+        for (uint256 i = 0; i + 4 <= data.length; i++) {
+            if (
+                data[i] == selector[0] && data[i + 1] == selector[1] && data[i + 2] == selector[2]
+                    && data[i + 3] == selector[3]
+            ) return true;
+        }
+        return false;
+    }
+
+    // ------------------------------------------------------------------ views while a round waits for settle()
+
+    function test_views_describeTheNextRoundOnceTheTimerHasRunOut() public {
+        _finishRoundOne();
+        for (uint256 i = 0; i < 5; i++) {
+            buyExactIn(alice, hook.minimumBuy());
+        }
+        uint256 bankAtExpiry = hook.bank();
+        uint256 prize = bankAtExpiry * 500 / 10_000;
+        uint256 escalatedMinimum = hook.minimumBuy();
+        assertGt(escalatedMinimum, FLOOR);
+
+        vm.warp(hook.deadline());
+        assertTrue(hook.settleable());
+        assertEq(hook.timeLeft(), 0);
+        assertEq(hook.pendingPrize(), prize, "the expired round's prize");
+        assertEq(hook.roundNumber(), 3, "a buy now joins round 3");
+        assertEq(hook.nextPrize(), (bankAtExpiry - prize) * 500 / 10_000, "round 3's prize from the remaining bank");
+        uint256 shown = hook.minimumBuy();
+        uint256 base = hook.nextPrize() * 2_000 / 10_000;
+        assertEq(shown, base < FLOOR ? FLOOR : base, "escalator reset for round 3");
+        assertLt(shown, escalatedMinimum);
+
+        WinGameHook.GameState memory s = hook.gameState();
+        assertTrue(s.settleable);
+        assertFalse(s.roundActive);
+        assertEq(s.leader, address(0));
+        assertEq(s.roundNumber, 3);
+        assertEq(s.minimumBuy, shown);
+        assertEq(s.nextPrize, hook.nextPrize());
+        assertEq(s.qualifyingBuysInRound, 0);
+        assertEq(s.deadline, 0);
+        assertEq(s.pendingRound, 2);
+        assertEq(s.pendingWinner, alice);
+        assertEq(s.pendingPrize, prize);
+
+        // The displayed minimum is exactly what the next buy is judged against.
+        buyExactIn(bob, shown - 1);
+        assertEq(hook.winnerAt(1).winner, alice, "round 2 closed for alice");
+        assertEq(hook.winnerAt(1).prize, prize);
+        assertFalse(hook.roundActive(), "one wei short does not open round 3");
+        buyExactIn(carol, hook.minimumBuy());
+        assertEq(hook.leader(), carol);
+        assertEq(hook.roundsStarted(), 3);
+    }
+
+    function test_views_firstRoundWaitingForSettleShowsSecondRoundTerms() public {
+        warpPastDecay();
+        buyExactIn(alice, hook.minimumBuy());
+        buyExactIn(bob, hook.minimumBuy());
+        uint256 bankAtExpiry = hook.bank();
+        uint256 prize = bankAtExpiry * 2_000 / 10_000;
+
+        warpPastFirstRoundFloor();
+        assertEq(hook.pendingPrize(), prize, "20% for round 1");
+        assertEq(hook.roundNumber(), 2);
+        assertEq(hook.nextPrize(), (bankAtExpiry - prize) * 500 / 10_000, "5% from round 2 on");
+        uint256 shown = hook.minimumBuy();
+        assertEq(shown, FLOOR, "escalator reset, floor regime");
+
+        buyExactIn(carol, shown - 1);
+        assertEq(hook.winnerAt(0).winner, bob);
+        assertFalse(hook.roundActive());
+        assertEq(hook.leader(), address(0));
+    }
+
+    function test_views_matchSettleOutcome() public {
+        _finishRoundOne();
+        buyExactIn(alice, hook.minimumBuy());
+        buyExactIn(bob, hook.minimumBuy());
+        vm.warp(hook.deadline() + 1);
+        uint256 shownMinimum = hook.minimumBuy();
+        uint256 shownPrize = hook.nextPrize();
+        uint64 shownRound = hook.roundNumber();
+        uint256 pending = hook.pendingPrize();
+
+        hook.settle();
+        assertEq(hook.winnerAt(1).prize, pending);
+        assertEq(hook.minimumBuy(), shownMinimum);
+        assertEq(hook.nextPrize(), shownPrize);
+        assertEq(hook.roundNumber(), shownRound);
+        assertEq(hook.pendingPrize(), 0);
+        assertFalse(hook.settleable());
+    }
+
     // ------------------------------------------------------------------ views
 
     function test_gameState_matchesIndividualViews() public {
@@ -514,6 +876,10 @@ contract WinGameHookGameTest is WinGameFixture {
         assertEq(s.feePips, 30_000);
         assertEq(s.teamOwed, hook.teamOwed());
         assertEq(s.winners, 0);
+        assertFalse(s.settleable);
+        assertEq(s.pendingRound, 0);
+        assertEq(s.pendingWinner, address(0));
+        assertEq(s.pendingPrize, 0);
     }
 
     function test_poolViews() public view {
