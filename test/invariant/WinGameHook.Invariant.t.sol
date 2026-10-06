@@ -170,7 +170,18 @@ contract WinGameHookInvariantTest is WinGameFixture {
             assertTrue(hook.leader() != address(0), "active round without a leader");
             assertGe(hook.qualifyingBuysInRound(), 1, "active round without a qualifying buy");
             assertGt(hook.deadline(), 0);
-            assertEq(hook.roundNumber(), hook.roundsStarted());
+            // Once the timer has run out the round is spoken for: a buy would be judged against the
+            // next one, and that is the number the views report until settle() runs.
+            if (block.timestamp < hook.deadline()) {
+                assertEq(hook.roundNumber(), hook.roundsStarted());
+                assertEq(hook.pendingPrize(), 0);
+            } else {
+                assertEq(hook.roundNumber(), hook.roundsStarted() + 1);
+                uint256 closingBps = hook.roundsStarted() == 1 ? 2_000 : 500;
+                assertEq(
+                    hook.pendingPrize(), hook.bank() * closingBps / 10_000, "pending prize is not the closing round's"
+                );
+            }
             if (hook.roundsStarted() == 1) {
                 assertGe(hook.deadline(), launchTime + 3 hours, "round 1 may end before launch + 3h");
                 // Either the 3-hour floor or a 10-minute timer, whichever is later.
@@ -188,13 +199,17 @@ contract WinGameHookInvariantTest is WinGameFixture {
             assertEq(hook.timeLeft(), 0);
             assertEq(hook.roundNumber(), hook.roundsStarted() + 1);
             assertFalse(hook.settleable());
+            assertEq(hook.pendingPrize(), 0);
         }
         assertEq(hook.settleable(), hook.roundActive() && block.timestamp >= hook.deadline());
         assertTrue(hook.leader() != address(swapRouter), "the router became the leader");
     }
 
     /// @notice The minimum buy is never under 8.5 IMD, is the larger of the floor and 20% of the
-    /// upcoming prize, and has risen by exactly 5% per qualifying buy of the running round.
+    /// upcoming prize, and has risen by exactly 5% per qualifying buy of the running round. While
+    /// an expired round waits for settle(), "upcoming" means the next round: its prize comes out of
+    /// the bank left after the pending prize, its escalator is back at 1, and the number quoted is
+    /// exactly what a buy landing now would be judged against (the handler's model says the same).
     function check_minimumBuyFollowsFloorPrizeAndEscalation() public view {
         uint256 escalator = WAD;
         for (uint256 i = 0; i < hook.qualifyingBuysInRound(); i++) {
@@ -202,14 +217,24 @@ contract WinGameHookInvariantTest is WinGameFixture {
         }
         assertEq(hook.escalator(), escalator, "escalator is not 1.05^qualifying buys");
 
+        bool pending = hook.settleable();
+        uint256 pendingPrize = pending ? hook.bank() * (hook.roundsStarted() == 1 ? 2_000 : 500) / 10_000 : 0;
+        assertEq(hook.pendingPrize(), pendingPrize, "pending prize");
         uint256 prizeBps = hook.roundNumber() == 1 ? 2_000 : 500;
-        assertEq(hook.nextPrize(), hook.bank() * prizeBps / 10_000, "next prize is not 20% (round 1) / 5% of the bank");
-        assertLe(hook.nextPrize(), hook.bank());
+        assertEq(
+            hook.nextPrize(),
+            (hook.bank() - pendingPrize) * prizeBps / 10_000,
+            "next prize is not 20% (round 1) / 5% of the bank the next round starts from"
+        );
+        assertLe(hook.nextPrize() + pendingPrize, hook.bank(), "prizes promised exceed the bank");
 
         uint256 base = hook.nextPrize() / 5;
         if (base < FLOOR) base = FLOOR;
-        assertEq(hook.minimumBuy(), base * escalator / WAD, "minimum buy formula");
+        assertEq(hook.minimumBuy(), base * (pending ? WAD : escalator) / WAD, "minimum buy formula");
         assertGe(hook.minimumBuy(), FLOOR, "minimum buy under the 8.5 IMD floor");
+        assertEq(
+            hook.minimumBuy(), handler.specMinimumNow(), "minimumBuy() differs from what a buy now is judged against"
+        );
     }
 
     /// @notice Past winners are append-only and never rewritten; rounds are numbered 1, 2, 3, ...;
@@ -244,19 +269,38 @@ contract WinGameHookInvariantTest is WinGameFixture {
         if (block.timestamp >= launchTime + 30 minutes) assertEq(fee, 30_000, "fee above base after 30 minutes");
 
         WinGameHook.GameState memory s = hook.gameState();
+        bool pending = hook.settleable();
         assertEq(s.bank, hook.bankBalance());
         assertEq(s.bank, hook.bank());
         assertEq(s.nextPrize, hook.nextPrize());
         assertEq(s.minimumBuy, hook.minimumBuy());
-        assertEq(s.leader, hook.leader());
         assertEq(s.timeLeft, hook.timeLeft());
         assertEq(s.roundNumber, hook.roundNumber());
-        assertEq(s.roundActive, hook.roundActive());
-        assertEq(s.deadline, hook.deadline());
-        assertEq(s.qualifyingBuysInRound, hook.qualifyingBuysInRound());
         assertEq(s.feePips, fee);
         assertEq(s.teamOwed, hook.teamOwed());
         assertEq(s.winners, hook.winnersCount());
+        assertEq(s.settleable, pending);
+        assertEq(s.pendingPrize, hook.pendingPrize());
+        if (pending) {
+            // The round fields describe the round a buy would join (none yet); the closing round is
+            // reported under pending*, so the website never shows a leader who can no longer be beaten.
+            assertEq(s.leader, address(0), "view shows the expired round's leader as current");
+            assertFalse(s.roundActive);
+            assertEq(s.deadline, 0);
+            assertEq(s.qualifyingBuysInRound, 0);
+            assertEq(s.pendingRound, hook.roundsStarted());
+            assertEq(s.pendingWinner, hook.leader());
+            assertGt(s.pendingPrize, 0, "an expired round with nothing to pay");
+            assertEq(s.pendingPrize, hook.bank() * (s.pendingRound == 1 ? 2_000 : 500) / 10_000);
+        } else {
+            assertEq(s.leader, hook.leader());
+            assertEq(s.roundActive, hook.roundActive());
+            assertEq(s.deadline, hook.deadline());
+            assertEq(s.qualifyingBuysInRound, hook.qualifyingBuysInRound());
+            assertEq(s.pendingRound, 0);
+            assertEq(s.pendingWinner, address(0));
+            assertEq(s.pendingPrize, 0);
+        }
     }
 
     // ------------------------------------------------------------------ the harness is not vacuous
@@ -270,8 +314,12 @@ contract WinGameHookInvariantTest is WinGameFixture {
         handler.buyAtThreshold(1, 0, 3); // exactly the minimum, on someone else's behalf
         handler.buyAtThreshold(2, 2, 7); // above it, relayed
         handler.buyExactOut(3, 5_000_000 ether, 2);
+        handler.buyAtThreshold(0, 1, 8); // one wei under, flagged must-lead: refused whole
+        handler.buyAtThreshold(0, 0, 8); // exactly the minimum, flagged: leads
+        handler.buyAtThreshold(1, 0, 9); // 64-byte payload without the flag, on someone's behalf
         handler.settle(0); // too early
         handler.sellExactIn(0, 30);
+        handler.sellExactIn(1, 9); // flagged must-lead: a sell can never lead, refused whole
         handler.sellExactOut(1, 0.5 ether);
         handler.donateRaw(0, 10 ether);
         handler.donateClaims(1, 10 ether);
@@ -296,10 +344,13 @@ contract WinGameHookInvariantTest is WinGameFixture {
         assertGe(handler.buys(), 7, "handler.buys()");
         assertGe(handler.sells(), 2, "handler.sells()");
         assertGe(handler.sellExactOutFills(), 1, "handler.sellExactOutFills()");
-        assertGe(handler.qualifyingBuys(), 4, "handler.qualifyingBuys()");
+        assertGe(handler.qualifyingBuys(), 5, "handler.qualifyingBuys()");
         assertGe(handler.nonQualifyingBuys(), 2, "handler.nonQualifyingBuys()");
-        assertGe(handler.boundaryQualified(), 2, "handler.boundaryQualified()");
+        assertGe(handler.boundaryQualified(), 3, "handler.boundaryQualified()");
         assertGe(handler.boundaryRejected(), 1, "handler.boundaryRejected()");
+        assertEq(handler.mustLeadRefusals(), 1, "handler.mustLeadRefusals()");
+        assertGe(handler.mustLeadLeads(), 1, "handler.mustLeadLeads()");
+        assertEq(handler.mustLeadSellRefusals(), 1, "handler.mustLeadSellRefusals()");
         assertGe(handler.roundsOpened(), 2, "handler.roundsOpened()");
         assertGe(handler.lazyCloses(), 1, "handler.lazyCloses()");
         assertGe(handler.settles(), 2, "handler.settles()");

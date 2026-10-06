@@ -219,11 +219,15 @@ contract WinGameHookAdversarialTest is WinGameFixture {
         assertEq(hook.winnersCount(), 3);
         assertEq(hook.unclaimedPrize(bob), expected);
 
-        // settle() for the round still open pays its prize and everything bob was already owed.
-        uint256 lastPrize = hook.nextPrize();
+        // settle() for the round still open pays its prize and everything bob was already owed. The
+        // expired round's prize is `pendingPrize()`; `nextPrize()` already describes the round after it.
+        uint256 lastPrize = hook.pendingPrize();
+        assertEq(lastPrize, hook.bank() * 5 / 100);
+        assertEq(hook.nextPrize(), (hook.bank() - lastPrize) * 5 / 100, "nextPrize must exclude the pending prize");
         uint256 before = imd.balanceOf(bob);
         hook.settle();
         assertEq(imd.balanceOf(bob) - before, expected + lastPrize);
+        assertEq(hook.pendingPrize(), 0);
         assertEq(hook.totalUnclaimedPrizes(), 0);
         assertAccounting();
     }
@@ -519,7 +523,9 @@ contract WinGameHookSwapDuringPayoutTest is WinGameFixture {
         buyExactIn(alice, hook.minimumBuy(), abi.encode(address(attacker)));
         warpPastFirstRoundFloor();
         uint256 bankBefore = hook.bank();
-        uint256 prize = hook.nextPrize();
+        // Round 1 has expired and waits for settle(): its prize is the pending one, 20% of the bank.
+        uint256 prize = hook.pendingPrize();
+        assertEq(prize, bankBefore * 20 / 100);
         attacker.arm(1_000 ether);
         uint256 balanceBefore = imd.balanceOf(address(attacker));
 

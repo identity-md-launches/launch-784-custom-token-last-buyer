@@ -12,6 +12,8 @@ import {ModifyLiquidityParams, SwapParams} from "v4-core/src/types/PoolOperation
 import {TickMath} from "v4-core/src/libraries/TickMath.sol";
 import {PoolSwapTest} from "v4-core/src/test/PoolSwapTest.sol";
 import {PoolModifyLiquidityTest} from "v4-core/src/test/PoolModifyLiquidityTest.sol";
+import {CustomRevert} from "v4-core/src/libraries/CustomRevert.sol";
+import {Hooks} from "v4-core/src/libraries/Hooks.sol";
 
 import {WinToken} from "../../src/WinToken.sol";
 import {WinGameHook} from "../../src/WinGameHook.sol";
@@ -138,6 +140,11 @@ contract WinGameHandler is Test {
     uint256 public donations;
     uint256 public liquidityChanges;
     uint256 public sellExactOutFills;
+    /// @notice Buys flagged "must lead" that the hook refused because they fell short, and sells
+    /// carrying the flag that were refused outright.
+    uint256 public mustLeadRefusals;
+    uint256 public mustLeadSellRefusals;
+    uint256 public mustLeadLeads;
 
     constructor(
         IPoolManager manager_,
@@ -203,10 +210,12 @@ contract WinGameHandler is Test {
     function buyExactOut(uint256 actorSeed, uint256 winAmount, uint256 idMode) external {
         address actor = _actor(actorSeed);
         winAmount = bound(winAmount, 1 ether, 20_000_000 ether);
-        (bytes memory hookData, address origin, address trader) = _identity(actor, idMode);
+        Identity memory id = _identity(actor, idMode);
         Before memory b = _before(actor);
+        uint256 minimum = _specMinimum(_specClose(b.game));
 
-        if (_swap(actor, origin, !winIsCurrency0, int256(winAmount), hookData)) {
+        (bool ok, bytes memory err) = _swap(actor, id.origin, !winIsCurrency0, int256(winAmount), id.hookData);
+        if (ok) {
             uint256 fee = _claims() - b.claims;
             uint256 gross = b.imdBalance - imd.balanceOf(actor);
             // Charged on top of what the pool took, so that it is exactly the rate of the gross.
@@ -215,23 +224,42 @@ contract WinGameHandler is Test {
                 "exact-out buy: fee is not the rate of the gross IMD paid"
             );
             _check(win.balanceOf(actor) - b.winBalance <= winAmount, "exact-out buy: received more WIN than asked");
-            _afterBuy(b.game, gross, fee, trader, 0);
+            if (id.mustLead) _check(gross >= minimum, "a must-lead exact-out buy landed below the minimum");
+            _afterBuy(b.game, gross, fee, id.trader, 0, id.mustLead);
         } else {
-            // The pool can run out of WIN for a huge request against a price limit; nothing changed.
-            _check(_sameGame(b.game, _game()), "reverted exact-out buy changed state");
+            // The pool can run out of WIN for a huge request against a price limit, or a must-lead
+            // buy can fall short of the minimum once the pool has priced it; nothing changed either way.
+            _checkUntouched(b, actor, "reverted exact-out buy");
+            if (id.mustLead && _contains(err, WinGameHook.NotQualifying.selector)) mustLeadRefusals++;
         }
     }
 
     // ================================================================== actions: sells
 
-    /// @notice Exact-input sell of part of the actor's WIN.
+    /// @notice Exact-input sell of part of the actor's WIN. One sell in nine carries the "must lead"
+    /// flag, which the hook must refuse outright: a sell can never lead, so the flag is a mistake
+    /// (or a probe) and the whole swap has to come back untouched.
     function sellExactIn(uint256 actorSeed, uint256 fraction) external {
         address actor = _actorWithWin(actorSeed);
+        bool flagged = fraction % 9 == 0;
         uint256 amount = win.balanceOf(actor) * bound(fraction, 1, 100) / 100;
         if (amount == 0) return;
         Before memory b = _before(actor);
 
-        if (_swap(actor, actor, winIsCurrency0, -int256(amount), abi.encode(actor))) {
+        if (flagged) {
+            (bool ok, bytes memory err) = _swap(actor, actor, winIsCurrency0, -int256(amount), abi.encode(actor, true));
+            _check(!ok, "a sell flagged must-lead went through");
+            _check(
+                _sameBytes(err, _afterSwapRevert(abi.encodeWithSelector(WinGameHook.MustLeadOnlyOnBuys.selector))),
+                "flagged sell: unexpected error"
+            );
+            _checkUntouched(b, actor, "refused flagged sell");
+            mustLeadSellRefusals++;
+            return;
+        }
+
+        (bool sold,) = _swap(actor, actor, winIsCurrency0, -int256(amount), abi.encode(actor));
+        if (sold) {
             uint256 fee = _claims() - b.claims;
             uint256 received = imd.balanceOf(actor) - b.imdBalance;
             // The fee comes out of the IMD the pool paid: gross = received + fee.
@@ -253,7 +281,8 @@ contract WinGameHandler is Test {
         imdAmount = bound(imdAmount, 1, 20 ether);
         Before memory b = _before(actor);
 
-        if (_swap(actor, actor, winIsCurrency0, int256(imdAmount), abi.encode(actor))) {
+        (bool ok,) = _swap(actor, actor, winIsCurrency0, int256(imdAmount), abi.encode(actor));
+        if (ok) {
             uint256 fee = _claims() - b.claims;
             uint256 feePips = specFeePips(block.timestamp);
             _check(
@@ -494,7 +523,9 @@ contract WinGameHandler is Test {
         out.escalator = SPEC_WAD;
     }
 
-    function _afterBuy(Game memory pre, uint256 gross, uint256 fee, address trader, uint256 boundaryKind) internal {
+    function _afterBuy(Game memory pre, uint256 gross, uint256 fee, address trader, uint256 boundaryKind, bool mustLead)
+        internal
+    {
         buys++;
         Game memory exp = _specClose(pre);
         if (exp.winners != pre.winners) {
@@ -527,11 +558,13 @@ contract WinGameHandler is Test {
             exp.escalator = next > SPEC_ESCALATOR_CAP ? SPEC_ESCALATOR_CAP : next;
             qualifyingBuys++;
             if (boundaryKind == 1) boundaryQualified++;
+            if (mustLead) mustLeadLeads++;
             _check(boundaryKind != 2, "a buy one wei under the minimum qualified");
         } else {
             nonQualifyingBuys++;
             if (boundaryKind == 2) boundaryRejected++;
             _check(boundaryKind != 1 && boundaryKind != 3, "a buy at or above the minimum did not qualify");
+            _check(!mustLead, "a must-lead buy was charged and left in the pool without the lead");
         }
 
         _check(_sameGame(exp, _game()), "buy: state differs from the brief");
@@ -590,10 +623,12 @@ contract WinGameHandler is Test {
 
     function _buyExactIn(address actor, uint256 gross, uint256 idMode, uint256 boundaryKind) internal {
         if (gross == 0 || imd.balanceOf(actor) < gross) return;
-        (bytes memory hookData, address origin, address trader) = _identity(actor, idMode);
+        Identity memory id = _identity(actor, idMode);
         Before memory b = _before(actor);
+        uint256 minimum = _specMinimum(_specClose(b.game));
 
-        if (_swap(actor, origin, !winIsCurrency0, -int256(gross), hookData)) {
+        (bool ok, bytes memory err) = _swap(actor, id.origin, !winIsCurrency0, -int256(gross), id.hookData);
+        if (ok) {
             uint256 fee = _claims() - b.claims;
             _check(
                 fee == gross * specFeePips(block.timestamp) / SPEC_PIPS,
@@ -602,10 +637,33 @@ contract WinGameHandler is Test {
             _check(
                 b.imdBalance - imd.balanceOf(actor) == gross, "exact-in buy: buyer paid something other than the amount"
             );
-            _afterBuy(b.game, gross, fee, trader, boundaryKind);
+            if (id.mustLead) _check(gross >= minimum, "a must-lead buy landed below the minimum");
+            _afterBuy(b.game, gross, fee, id.trader, boundaryKind, id.mustLead);
+        } else if (id.mustLead && gross < minimum) {
+            _checkMustLeadRefused(b, actor, err, minimum, gross);
         } else {
             _violation("exact-in buy reverted");
         }
+    }
+
+    /// @dev The brief's "must lead" promise: the whole swap is undone with `NotQualifying`, so no
+    /// fee is taken, no expired round is closed on the side, and the buyer keeps every wei.
+    function _checkMustLeadRefused(Before memory b, address actor, bytes memory err, uint256 minimum, uint256 gross)
+        internal
+    {
+        bytes memory expected =
+            _afterSwapRevert(abi.encodeWithSelector(WinGameHook.NotQualifying.selector, minimum, gross));
+        _check(_sameBytes(err, expected), "must-lead buy below the minimum: unexpected error");
+        _checkUntouched(b, actor, "refused must-lead buy");
+        mustLeadRefusals++;
+    }
+
+    /// @dev A reverted swap must have left nothing behind: game, claims and the actor's balances.
+    function _checkUntouched(Before memory b, address actor, string memory what) internal {
+        _check(_sameGame(b.game, _game()), string.concat(what, " changed state"));
+        _check(_claims() == b.claims, string.concat(what, " moved claims"));
+        _check(imd.balanceOf(actor) == b.imdBalance, string.concat(what, " took IMD"));
+        _check(win.balanceOf(actor) == b.winBalance, string.concat(what, " moved WIN"));
     }
 
     struct Before {
@@ -615,6 +673,15 @@ contract WinGameHandler is Test {
         uint256 winBalance;
     }
 
+    /// @dev How a buy names its buyer: the hookData sent, the tx.origin to sign with, who the brief
+    /// says the buyer is, and whether the buyer insisted on taking the lead.
+    struct Identity {
+        bytes hookData;
+        address origin;
+        address trader;
+        bool mustLead;
+    }
+
     function _before(address actor) internal view returns (Before memory b) {
         b.game = _game();
         b.claims = _claims();
@@ -622,36 +689,63 @@ contract WinGameHandler is Test {
         b.winBalance = win.balanceOf(actor);
     }
 
-    /// @dev One swap through the router as `actor`, signed by `origin`. Never reverts.
+    /// @dev One swap through the router as `actor`, signed by `origin`. Never reverts; a failure
+    /// comes back as the revert data.
     function _swap(address actor, address origin, bool zeroForOne, int256 amountSpecified, bytes memory hookData)
         internal
-        returns (bool ok)
+        returns (bool ok, bytes memory err)
     {
         SwapParams memory params = SwapParams(zeroForOne, amountSpecified, _limit(zeroForOne));
         vm.prank(actor, origin);
         try router.swap(key, params, PoolSwapTest.TestSettings(false, false), hookData) {
             ok = true;
-        } catch {}
+        } catch (bytes memory reason) {
+            err = reason;
+        }
     }
 
-    /// @dev Ways a router can (fail to) name the buyer. Returns the hookData, the tx.origin to use
-    /// and who the brief says the buyer is.
-    function _identity(address actor, uint256 mode)
-        internal
-        view
-        returns (bytes memory hookData, address origin, address trader)
-    {
+    /// @dev The manager wraps a hook revert: WrappedError(hook, afterSwap, inner, HookCallFailed).
+    function _afterSwapRevert(bytes memory inner) internal view returns (bytes memory) {
+        return abi.encodeWithSelector(
+            CustomRevert.WrappedError.selector,
+            address(hook),
+            IHooks.afterSwap.selector,
+            inner,
+            abi.encodeWithSelector(Hooks.HookCallFailed.selector)
+        );
+    }
+
+    function _contains(bytes memory data, bytes4 selector) internal pure returns (bool) {
+        for (uint256 i = 0; i + 4 <= data.length; i++) {
+            if (
+                data[i] == selector[0] && data[i + 1] == selector[1] && data[i + 2] == selector[2]
+                    && data[i + 3] == selector[3]
+            ) return true;
+        }
+        return false;
+    }
+
+    function _sameBytes(bytes memory a, bytes memory b) internal pure returns (bool) {
+        return keccak256(a) == keccak256(b);
+    }
+
+    /// @dev Ways a router can (fail to) name the buyer. The test router has no `msgSender()`, so an
+    /// empty or unusable payload falls through to the signer.
+    function _identity(address actor, uint256 mode) internal view returns (Identity memory) {
         address other = actors[(uint256(uint160(actor)) % actors.length + mode % actors.length) % actors.length];
-        origin = actor;
-        mode = mode % 8;
-        if (mode == 0) return (abi.encode(actor), actor, actor);
-        if (mode == 1) return ("", actor, actor); // nothing passed: the signer
-        if (mode == 2) return (abi.encodePacked(other), actor, other); // packed 20 bytes
-        if (mode == 3) return (abi.encode(other), actor, other); // buying on someone's behalf
-        if (mode == 4) return (hex"00112233445566778899aabbccddeeff00112233445566778899aabbccddee", actor, actor);
-        if (mode == 5) return (abi.encodePacked(uint96(1), actor), actor, actor); // dirty high bits
-        if (mode == 6) return (abi.encode(address(0)), actor, actor);
-        return ("", other, other); // relayed: the signer is not the payer
+        mode = mode % 10;
+        if (mode == 0) return Identity(abi.encode(actor), actor, actor, false);
+        if (mode == 1) return Identity("", actor, actor, false); // nothing passed: the signer
+        if (mode == 2) return Identity(abi.encodePacked(other), actor, other, false); // packed 20 bytes
+        if (mode == 3) return Identity(abi.encode(other), actor, other, false); // buying on someone's behalf
+        if (mode == 4) {
+            return Identity(hex"00112233445566778899aabbccddeeff00112233445566778899aabbccddee", actor, actor, false);
+        }
+        if (mode == 5) return Identity(abi.encodePacked(uint96(1), actor), actor, actor, false); // dirty high bits
+        if (mode == 6) return Identity(abi.encode(address(0)), actor, actor, false);
+        if (mode == 7) return Identity("", other, other, false); // relayed: the signer is not the payer
+        if (mode == 8) return Identity(abi.encode(actor, true), actor, actor, true); // the website's "must lead" form
+        return Identity(abi.encode(other, false), actor, other, false); // 64-byte form without the flag
     }
 
     function _actor(uint256 seed) internal view returns (address) {
