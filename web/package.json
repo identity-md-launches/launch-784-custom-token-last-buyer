@@ -1,0 +1,34 @@
+{
+  "name": "win-game-site",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "check:live": "tsx scripts/check-live.ts",
+    "check:fork": "tsx scripts/check-fork.ts",
+    "check:ui": "WIN_BROWSER_CHECK=1 tsx scripts/check-fork.ts",
+    "generate:contracts": "node scripts/generate-contracts.mjs"
+  },
+  "dependencies": {
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "viem": "2.38.5"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.10.2",
+    "@types/node": "24.7.2",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "@vitejs/plugin-react": "5.0.4",
+    "playwright": "1.63.0",
+    "solc": "0.8.26",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vite": "7.1.10"
+  }
+}

@@ -1,0 +1,30 @@
+
+> win-game-site@1.0.0 check:live
+> tsx scripts/check-live.ts
+
+{
+  "result": "PASS",
+  "block": "81579167",
+  "timestamp": "1791284494",
+  "state": {
+    "bank": "404100732840385770692",
+    "nextPrize": "80820146568077154138",
+    "minimumBuy": "80871686254978951228",
+    "leader": "0xD9497B53abCD6972B6370Cb195B6Bfd6B280e607",
+    "timeLeft": "5641",
+    "roundNumber": "1",
+    "roundActive": true,
+    "deadline": "1791290135",
+    "qualifyingBuysInRound": 33,
+    "feePips": "30000",
+    "teamOwed": "44900081426709529785",
+    "winners": "0",
+    "settleable": false,
+    "pendingRound": "0",
+    "pendingWinner": "0x0000000000000000000000000000000000000000",
+    "pendingPrize": "0"
+  },
+  "pastWinners": [],
+  "quotedBuyInput": "161743372509957902456",
+  "quotedWinOutput": "22685909476954833407454824"
+}

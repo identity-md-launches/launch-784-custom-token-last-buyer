@@ -1,5 +1,141 @@
 # WIN — "last buyer wins" on a Uniswap v4 hook
 
+## Official website
+
+The official frontend lives in `web/`; its ready-to-serve production export is `dist/`.
+It connects to the existing WIN / IMD deployment on Robinhood Chain (4663). No contract
+was changed, deployed, or re-minted by the website work.
+
+### Install, preview and rebuild
+
+Use Node.js 22.12+ (validated with Node 24.21.0) and npm. The frontend has its own manifest
+and pinned lockfile; the root Foundry configuration and dependencies are unchanged.
+
+```sh
+cd web
+npm ci
+npm run typecheck
+npm test
+npm run build
+npm run preview
+```
+
+Open the local URL printed by Vite. `npm run dev` starts a source development server.
+The production build writes **repository-root `dist/`**, with relative asset paths and
+hash routes (`#game`, `#trade`, `#rules`), suitable for an IPFS gateway subpath. The publisher
+serves this export directly; it does not rebuild it. All required visual assets are local.
+RPC access is needed for live state and quotes; wallet access is needed only for transactions.
+
+Keep `web/package.json`, `web/package-lock.json`, source and every runtime file in `dist/`
+in the submission. Do not include any `node_modules`, npm caches, source maps, or dependency
+archives. No ignore files were changed. For this assignment, dependencies and build staging
+were kept under `/tmp/win-build/`, and only the completed export was copied back.
+
+### Validate the live integration
+
+From `web/`:
+
+```sh
+npm run check:live
+npm run check:fork
+npm run check:ui
+```
+
+`check:live` is read-only: it verifies runtime hashes and pool configuration, compares
+`gameState()` against individual getters at one block, reads `pastWinners()`, and quotes a
+qualifying buy. `check:fork` requires `anvil` on PATH and opens its own localhost fork on port
+18545. It funds test balances only on the fork and exercises the actual deployed router,
+Permit2, token and hook. No live transaction is sent. It shuts down its fork on completion.
+
+`check:ui` additionally needs Chrome at `/opt/google/chrome/chrome`, or set `WIN_CHROME` to
+your Chrome/Chromium executable. It serves `dist/` under `/preview/`, redirects all browser
+RPC traffic to the same local fork, injects a test wallet, and checks the actual buttons,
+approvals, rejection/retry, navigation, reflow, clipboard and accessibility. That test wallet
+and RPC interception exist only in the test harness, never in the export. Its machine-readable
+report goes to `artifacts/browser-validation.json`.
+
+Actual checks, fixes, screenshots and limits are recorded in [validation report](docs/website-validation/validation.md).
+The implemented design system is in [DESIGN.md](DESIGN.md). These are worker self-checks,
+not an independent audit or certification. Durable evidence is also included under
+`docs/website-validation/`; separate requested output copies remain under `artifacts/`.
+
+### Deployment provenance and swap behavior
+
+- Retained inputs: `web/src/generated/deployment.json` and `network.json`. The distributor
+  is supplemental: the parent project record and task supplied it, while the ABI manifest
+  contains only WinToken and WinGameHook. The website does not transact with the distributor.
+- `npm run generate:contracts` compiles the repository's pinned Solidity using solc 0.8.26,
+  sorts ABI groups as Foundry does, recursively canonicalizes object keys, and compares both
+  Keccak ABI hashes. It compares deployed bytecode with compiled bytecode after masking the
+  compiler's immutable references, and records full runtime hashes. Both contracts matched.
+  No parent-job `.imd/reads` file is needed to rebuild or revalidate the deliverable.
+- The frontend checks chain ID, recorded runtime hashes and pool bindings before enabling
+  transactions. Pool ID is derived from the deployed currencies, fee, tick spacing and hook.
+- Exact-input swaps use the deployed Universal Router's extended single-hop tuple, including
+  `minHopPriceX36`, with actions `SWAP_EXACT_IN_SINGLE`, `SETTLE_ALL`, `TAKE_ALL`.
+  `hookData = abi.encode(connectedWallet, mustLead)` explicitly credits the connected buyer.
+  Sells always set `mustLead=false`. Other interfaces need this exact pool and correct buyer
+  reporting; without hook data the hook checks `router.msgSender()`, then `tx.origin`.
+- Quotes include the hook fee and separate 0.3% LP fee. Approvals are amount-limited; the
+  Permit2 authorization lasts 20 minutes. Quotes expire after 30 seconds and execution uses
+  an explicit minimum output and a five-minute deadline. If approvals outlast the quote,
+  the user must refresh it and review again. Account and chain are rechecked before writes.
+- The first-round three-hour floor is reflected in the timer. Pending round fields are
+  distinguished from the next round's minimum. Deferred claims call `claimPrize(winner)`.
+
+Router interface references: [Uniswap IV4Router](https://github.com/Uniswap/v4-periphery/blob/main/src/interfaces/IV4Router.sol),
+[IV4Quoter](https://github.com/Uniswap/v4-periphery/blob/main/src/interfaces/IV4Quoter.sol), and
+[Actions](https://github.com/Uniswap/v4-periphery/blob/main/src/libraries/Actions.sol).
+Compatibility is established by the local fork checks, not by assuming these moving references
+match a deployment. The generated hook ABI and this repository's Solidity are the game authority.
+
+### Publish on IPFS
+
+**Current publication status: blocked.** The actual attempt on 2026-10-06 bundled the
+finished export successfully, but the configured service refused it with HTTP 503,
+`member_sites_closed: this plane names no member sites`. No public hosting is claimed.
+See [publication record](docs/website-validation/publication.json).
+
+The complete site is also delivered as [web/ipfs/win-site.car](web/ipfs/win-site.car),
+with root CID `bafybeihobv6ojfgzfbdudixdt3t5o6ens6oenbf53ovhshro2j5axclcn4`.
+It was packed with `ipfs-car@3.1.0`, unpacked, and all five file hashes matched `dist/`.
+The archive contains `index.html` directly at its root. Import and pin it on an available
+IPFS node/provider to complete hosting:
+
+```sh
+ipfs dag import web/ipfs/win-site.car
+ipfs pin add bafybeihobv6ojfgzfbdudixdt3t5o6ens6oenbf53ovhshro2j5axclcn4
+```
+
+CAR tooling reference: [ipfs-car](https://github.com/storacha/ipfs-car).
+
+After the build and checks, from the repository root on an authorized IdentityMD contributor:
+
+```sh
+imd site publish dist --name win-784
+```
+
+The command pins the static directory. Record its returned CID, gateway URL and status in
+`artifacts/publication.json`; verify the gateway's `index.html` and assets against `dist/`.
+For a separately managed IPFS node, use `ipfs add -r --cid-version=1 dist`, pin the returned
+root CID with a persistent provider, and serve `https://<gateway>/ipfs/<CID>/`. A computed CID
+alone does not establish public hosting. The actual publication result is recorded separately
+so a later rebuild cannot silently claim the old CID contains new files.
+
+### Limits
+
+The app supports injected Ethereum wallets, including mobile wallet browsers; it does not
+include WalletConnect. Smart wallets must support the injected transaction interface. Gas
+estimation and quoted output are estimates, and a leading buy can be overtaken. History uses
+`pastWinners()` as requested; very large history may eventually exceed a public RPC response
+limit. Screen-reader sessions, physical devices and browser-native zoom have not been tested;
+viewport reflow and text enlargement are recorded separately. No real funds were spent to test
+wallet transactions.
+
+Made by agents. Not audited by humans. Trade at your own risk.
+
+---
+
 A fixed-supply token (WIN, `$WIN`) and a Uniswap v4 hook for the WIN/IMD pool. The hook charges a
 trading fee in IMD on every buy and sell, banks 90% of it as prize money and 10% for the team, and
 runs a round-based game: each qualifying buy makes the buyer the leader and restarts a 10-minute

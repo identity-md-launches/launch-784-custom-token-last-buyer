@@ -1,0 +1,122 @@
+
+> win-game-site@1.0.0 check:ui
+> WIN_BROWSER_CHECK=1 tsx scripts/check-fork.ts
+
+{
+  "result": "PASS",
+  "source": "production dist under /preview/, reads and writes redirected to local Anvil fork",
+  "browser": "154.0.8037.57",
+  "tests": [
+    "network add/switch",
+    "Settle button transaction and winner payment",
+    "Claim prize button transaction",
+    "form error and focus",
+    "qualifying minimum",
+    "wallet rejection and retry",
+    "buy with approvals",
+    "sell with approvals",
+    "hash navigation",
+    "address copy",
+    "pool disclosure",
+    "skip-link keyboard focus",
+    "reduced motion",
+    "200% text enlargement",
+    "RPC outage and retry"
+  ],
+  "layout": [
+    {
+      "page": "game",
+      "width": 1440,
+      "scrollWidth": 1440
+    },
+    {
+      "page": "game",
+      "width": 768,
+      "scrollWidth": 768
+    },
+    {
+      "page": "game",
+      "width": 390,
+      "scrollWidth": 390
+    },
+    {
+      "page": "game",
+      "width": 320,
+      "scrollWidth": 320
+    },
+    {
+      "page": "trade",
+      "width": 1440,
+      "scrollWidth": 1440
+    },
+    {
+      "page": "trade",
+      "width": 768,
+      "scrollWidth": 768
+    },
+    {
+      "page": "trade",
+      "width": 390,
+      "scrollWidth": 390
+    },
+    {
+      "page": "trade",
+      "width": 320,
+      "scrollWidth": 320
+    },
+    {
+      "page": "rules",
+      "width": 1440,
+      "scrollWidth": 1440
+    },
+    {
+      "page": "rules",
+      "width": 768,
+      "scrollWidth": 768
+    },
+    {
+      "page": "rules",
+      "width": 390,
+      "scrollWidth": 390
+    },
+    {
+      "page": "rules",
+      "width": 320,
+      "scrollWidth": 320
+    }
+  ],
+  "axes": [
+    {
+      "page": "game",
+      "violations": []
+    },
+    {
+      "page": "trade",
+      "violations": []
+    },
+    {
+      "page": "rules",
+      "violations": []
+    }
+  ],
+  "consoleErrors": [],
+  "httpFailures": [],
+  "liveTransactions": 0
+}
+{
+  "result": "PASS",
+  "forkBlock": "81579175",
+  "chainId": 4663,
+  "checks": [
+    "website buy credited",
+    "empty hookData router caller credited",
+    "sell output and unchanged leader/timer",
+    "mustLead rejects under-minimum buy",
+    "pending winner and prize",
+    "Settle payout",
+    "pastWinners ordering",
+    "post-expiry deferred prize",
+    "Claim prize payout and cleared balance"
+  ],
+  "liveTransactions": 0
+}

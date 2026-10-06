@@ -1,0 +1,14 @@
+
+> win-game-site@1.0.0 build
+> vite build
+
+vite v7.1.10 building for production...
+transforming...
+✓ 429 modules transformed.
+rendering chunks...
+computing gzip size...
+../dist/index.html                   0.76 kB │ gzip:   0.44 kB
+../dist/assets/index-Dez-C2pa.css   20.63 kB │ gzip:   4.84 kB
+../dist/assets/index-BW_Jo_Jz.js    66.10 kB │ gzip:  16.04 kB
+../dist/assets/vendor-CY92aQMe.js  454.57 kB │ gzip: 141.80 kB
+✓ built in 2.49s

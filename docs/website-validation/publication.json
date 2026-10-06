@@ -1,0 +1,30 @@
+{
+  "status": "blocked",
+  "publiclyHosted": false,
+  "attempt": {
+    "command": "imd site publish dist --name win-784",
+    "exitCode": 1,
+    "httpStatus": 503,
+    "code": "member_sites_closed",
+    "message": "this plane names no member sites",
+    "bundledBytes": 162971
+  },
+  "ipfs": {
+    "rootCid": "bafybeihobv6ojfgzfbdudixdt3t5o6ens6oenbf53ovhshro2j5axclcn4",
+    "archive": "artifacts/win-site.car",
+    "bytes": 542974,
+    "sha256": "a51185579f9220ca7e79367c721b138735693b22764f588e3a50d9a313d99f4a",
+    "createdWith": "ipfs-car 3.1.0",
+    "unpackedFilesMatchDist": true,
+    "rootContainsIndexHtml": true,
+    "repositoryArchive": "web/ipfs/win-site.car"
+  },
+  "exportSha256": {
+    "favicon.svg": "33b59bc6b2223ff26e5f0156c234b079e333bfee8e2374ed88395db403488201",
+    "index.html": "9c2b24a89ade691e9752b8514faa6ec89d216ecc357a18985dd3d2ae79d0cf01",
+    "assets/vendor-CY92aQMe.js": "6cdc1e4febe6941d28947c97e39ce12bf9551a0e6246e3f28b080b1b560a71e1",
+    "assets/index-BW_Jo_Jz.js": "74a4dfe049414010250b764a85ebaa92bf44b2d3b7ac58e9de3e8c9622d276f7",
+    "assets/index-Dez-C2pa.css": "8daf17dc93550896ca2fba4da6dad6e7f13b15ba9083bdaf63d06714e49cfa85"
+  },
+  "remaining": "Import and persistently pin the CAR with an available IPFS provider, then verify a public gateway. A local CID is not proof of public hosting."
+}

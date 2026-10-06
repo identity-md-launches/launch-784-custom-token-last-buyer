@@ -1,0 +1,12 @@
+{
+  "fileCount": 192,
+  "rawRepositoryFileBytes": 3498224,
+  "compressedZipBytes": 1163936,
+  "limitBytes": 8388608,
+  "underLimitEvenUncompressed": true,
+  "exportBytes": 542284,
+  "protectedTrackedPathsChanged": [],
+  "submodules": 0,
+  "dependencyDirectoriesSubmitted": 0,
+  "note": "Counts existing tracked files plus new nonignored deliverables, including retained evidence and IPFS CAR. No commit created or Git metadata modified."
+}

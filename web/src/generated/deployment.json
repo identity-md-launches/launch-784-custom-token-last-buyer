@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "launchId": "5410a4c1-b4f4-43cf-8271-236481e641c8",
+  "chainId": 4663,
+  "repoUrl": "https://github.com/identity-md-launches/launch-784-custom-token-last-buyer",
+  "sourceCommit": "4f92f8563bab88f001b5d3ddfe26bb4309b98e1a",
+  "attestationHash": "da7ccd3eb2aa67988ffdf56bb635a61f5ce58ec4e5dd9d5c2edb2a067fcfae91",
+  "manifest": {
+    "kind": "univ4_hook",
+    "hook": {
+      "contract": "WinGameHook",
+      "constructorArgs": [
+        "$poolManager",
+        "$token"
+      ],
+      "permissions": [
+        "beforeInitialize",
+        "beforeSwap",
+        "afterSwap",
+        "beforeSwapReturnDelta",
+        "afterSwapReturnDelta"
+      ]
+    },
+    "token": {
+      "contract": "WinToken",
+      "name": "WIN",
+      "symbol": "WIN",
+      "decimals": 18
+    },
+    "pool": {
+      "pairedCurrency": "0x5f7bb59365ce557c26dbcaa4ee9d39a4b95b7127",
+      "fee": 3000,
+      "tickSpacing": 60,
+      "initialPrice": "125262255113908064987203232"
+    },
+    "notes": "WIN ($WIN): a \"last buyer wins\" game on a Uniswap v4 WIN/IMD pool.\n\nTOKEN. WinToken: plain fixed-supply ERC-20, no constructor arguments, mints 1,000,000,000e18 once to its deployer. No owner, mint, pause, blocklist, transfer fee or upgrade path.\n\nHOOK. WinGameHook(IPoolManager $poolManager, address $token). No owner, no setters, no DELEGATECALL/SELFDESTRUCT. getHookPermissions returns exactly the five flags listed (address bits 0x20CC). beforeInitialize is PoolManager-only, binds the hook to one pool pairing $token with one 18-decimal currency (IMD is read from the PoolKey), accepts LP fee 500/3000/10000 only, refuses a second pool, and refuses a starting price more than 300 ticks from the briefed one for the ordering it sees (WrongStartingPrice). pool.fee 3000 / tickSpacing 60 is the real LP fee; the hook fee is separate.\n\nINITIAL PRICE - ORDERING. 2500 IMD market cap = 2.5e-6 IMD per WIN, snapped to tick |129000| (2499.66 IMD). The value written, 125262255113908064987203232 = getSqrtPriceAtTick(-129000) = launchSqrtPriceX96(true), is right when WIN sorts below IMD (currency0). If WIN sorts above IMD the hook expects 50111677533496076234078224273595 (tick +129000) and reverts initialization with the value written here, so the launch fails loudly rather than opening a mispriced pool. The deployer must either pin WIN's address below IMD or use the ordering's value. WIN-only range: [-128940, 887220] as currency0, [-887220, 128940] as currency1.\n\nHOOK FEE. Always in IMD, for all four swap shapes: 50% at initialization, linear to 3% over 30 minutes (brief's curve kept). 90% to the bank, 10% to teamOwed; claimTeamFees() (callable by anyone) pays only the constant wallet 0x611F08c7226591708B5F53F29BF53f3830D54511. Fees are minted as ERC-6909 claims, so the first buy works while the manager holds no IMD; payouts burn and take inside the hook's own unlock. The bank starts empty and leaves only as prizes.\n\nGAME. Qualifying buy: gross IMD >= minimumBuy() = max(8.5 IMD, 20% of next prize) x 1.05^n (n = qualifying buys this round, reset each round). It sets the leader and deadline = now + 10 min; round 1 cannot end before launch + 3 h and pays 20% of the bank, later rounds 5%, the rest stays. Sells never touch leader or timer. settle() is open to anyone after expiry and always closes the round: the prize is pushed, or left in unclaimedPrize (claimPrize) if IMD refuses the winner. A buy after expiry first closes the round for its real leader (end-of-round snipe defence). Buyer = hookData (abi.encode(buyer, mustLead), abi.encode(buyer) or 20 packed bytes), else the router's msgSender(), else tx.origin. mustLead=true reverts a buy that misses the minimum at execution. Views: gameState, bankBalance, nextPrize, minimumBuy, leader, timeLeft, roundNumber, pastWinners, pendingPrize.\n\nKNOWN LIMITS. Exact-input buys and exact-output sells that would fill partially revert. Sells need a prior buy to put IMD in the single-sided pool. IMD must be a plain 18-decimal ERC-20. Block stuffing is deterred economically only (REVIEW E10, requester decision; an absolute prize cap is recommended once the chain is fixed).\n\nOPEN. Tests use their own PoolManager and mock IMD in both orderings; a rehearsal against the selected chain's real PoolManager and IMD is still owed. docs/REVIEW.md records the implementer's self-review and the independent review's findings E1-E10 with dispositions; the protected floor suites pass with flags 0x20CC. Supply split and liquidity (90% to the pool single-sided, 0% to the requester, no IMD or ETH added) are launch-policy inputs, not set here."
+  },
+  "contracts": [
+    {
+      "name": "WinToken",
+      "address": "0xd7a712f3b8c574c87b1b2bd1682431093c49dc1c",
+      "txHash": "0xd8517c9aa5493d3b394d6227cc53c6b0a1bb395ecbe5c539157c0d57da3e713b",
+      "blockNumber": 81528886,
+      "creationCodeHash": "6e408c51dd9f51c327e9f9e29800bf109e9e46c1bf1efedb8c0bb9f9806f3ce7",
+      "abiHash": "9d7e0b1a4a9a92aeffc2cc775e7170db2e81ca8e34a25f48cf2e68f2e9bef78a"
+    },
+    {
+      "name": "WinGameHook",
+      "address": "0xfdc1d108bba5f9196aa6d1459717738a6a2fe0cc",
+      "txHash": "0xd8517c9aa5493d3b394d6227cc53c6b0a1bb395ecbe5c539157c0d57da3e713b",
+      "blockNumber": 81528886,
+      "creationCodeHash": "13144171d98e4374ffbabb1e24e9e9c0ffa51eeb0ff617de2ca7ac841c0fa44b",
+      "abiHash": "c386972d36c2ee465afd982506875d14bcb39e11a4e8c79a102a01e530ed1653"
+    }
+  ],
+  "abiInstructions": "Build ABIs from this exact source commit; compare canonicalKeccak(abi) with abiHash. Verify deployed code on the stated chain before enabling transactions."
+}

@@ -1,0 +1,19 @@
+
+> win-game-site@1.0.0 test
+> tsx --test tests/*.test.ts
+
+✔ gameState decodes all 16 fields, including pending-round semantics (1.803154ms)
+✔ pastWinners decodes tuples in round, timestamp, winner, prize order (0.454482ms)
+✔ countdown uses elapsed monotonic time, clamps expiry, handles the three-hour first round (0.146971ms)
+✔ amount validation never silently rounds excess decimals or scientific notation (0.331858ms)
+✔ Settle and Claim prize use the correct selectors and connected winner (2.468762ms)
+✔ swap uses the pinned single pool, extended router layout, exact limits and explicit buyer (1.532208ms)
+✔ minimum output and fee calculations use integer arithmetic (0.315373ms)
+ℹ tests 7
+ℹ suites 0
+ℹ pass 7
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 554.693655

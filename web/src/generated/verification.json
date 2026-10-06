@@ -1,0 +1,51 @@
+{
+  "chainId": 4663,
+  "sourceCommit": "4f92f8563bab88f001b5d3ddfe26bb4309b98e1a",
+  "blockNumber": "81566213",
+  "contracts": [
+    {
+      "name": "WinToken",
+      "address": "0xd7a712f3b8c574c87b1b2bd1682431093c49dc1c",
+      "abiHash": "9d7e0b1a4a9a92aeffc2cc775e7170db2e81ca8e34a25f48cf2e68f2e9bef78a",
+      "runtimeHash": "0x5bafaeb8936a72b4edf9ca50625e1c25fcd4f47a4a3f39fa57d29deda86d2d8e",
+      "sourceRuntimeMatched": true
+    },
+    {
+      "name": "WinGameHook",
+      "address": "0xfdc1d108bba5f9196aa6d1459717738a6a2fe0cc",
+      "abiHash": "c386972d36c2ee465afd982506875d14bcb39e11a4e8c79a102a01e530ed1653",
+      "runtimeHash": "0x5d4fad55b16b7faefec322932f001df67ce45547f199b388db2338105eff21da",
+      "sourceRuntimeMatched": true
+    },
+    {
+      "name": "poolManager",
+      "address": "0x8366a39cc670b4001a1121b8f6a443a643e40951",
+      "runtimeHash": "0xbd3881180b547f5fe817545743cfb4343e96b1bc6640dcd70c106b0066e95626"
+    },
+    {
+      "name": "universalRouter",
+      "address": "0x8876789976decbfcbbbe364623c63652db8c0904",
+      "runtimeHash": "0x2ce6aaaf9f4151f5e1cbf774668772f17f532ae11b15e9284fd0a072a8b0fbde"
+    },
+    {
+      "name": "quoter",
+      "address": "0x8dc178efb8111bb0973dd9d722ebeff267c98f94",
+      "runtimeHash": "0xd707b1da8cb165e5ea35a3b4450d971eb562ec171e23492aa117036b78a868f6"
+    },
+    {
+      "name": "stateView",
+      "address": "0xf3334192d15450cdd385c8b70e03f9a6bd9e673b",
+      "runtimeHash": "0x7d9c591e0956fd89d98feb4ffcfe8bf1f7a62bd485edd979fa21d104b49878a6"
+    },
+    {
+      "name": "positionManager",
+      "address": "0x58daec3116aae6d93017baaea7749052e8a04fa7",
+      "runtimeHash": "0xc873e135dc9aaec88489cfbad146b4cb49d6a32e0d80326377784b7ba17670b2"
+    },
+    {
+      "name": "permit2",
+      "address": "0x000000000022d473030f116ddee9f6b43ac78ba3",
+      "runtimeHash": "0x5208783f52488f7d3493e5e38311ab707c1d75457fe472a19b0b4d57d66a7fca"
+    }
+  ]
+}
